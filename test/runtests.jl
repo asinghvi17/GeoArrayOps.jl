@@ -90,9 +90,39 @@ using ExplicitImports
         ]
 
         rdem = height_above_nearest_drainage(dem)
-        @test rdem[1, 1] == 0  # all descending
-        @test rdem[4, 4] == 3  # highest ascending point
-        @test maximum(rdem) == 3
+        @test all(iszero, rdem)
+
+        @testset "HAND path clipping" begin
+            path_dem = Float32[4, 6, 5, 7, 0]
+            output = zeros(Float32, length(path_dem))
+            directions = [1, 1, 1, 1, 0]
+            stream_mask = falses(length(path_dem))
+            stream_mask[end] = true
+            Geomorphometry._hand!(
+                output,
+                reverse(eachindex(path_dem)),
+                directions,
+                eachindex(path_dem),
+                path_dem,
+                stream_mask,
+            )
+            @test output == path_dem
+
+            below_stream_dem = Float32[-2, 1, 0]
+            fill!(output, 0)
+            resize!(output, length(below_stream_dem))
+            directions = [1, 1, 0]
+            stream_mask = Bool[false, false, true]
+            Geomorphometry._hand!(
+                output,
+                reverse(eachindex(below_stream_dem)),
+                directions,
+                eachindex(below_stream_dem),
+                below_stream_dem,
+                stream_mask,
+            )
+            @test output == Float32[0, 1, 0]
+        end
 
         acc, dir = flowaccumulation(dem; method = D8())
         @test maximum(acc) == 10

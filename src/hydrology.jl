@@ -1,10 +1,6 @@
 
-function edges(A::AbstractMatrix)
+function outlets(A::AbstractMatrix)
     CI = CartesianIndices(A)
-    edges(CI)
-end
-
-function edges(CI::CartesianIndices)
     indices = Vector{CartesianIndex}()
     append!(indices, first(eachrow(CI)))
     append!(indices, last(eachrow(CI)))
@@ -13,20 +9,24 @@ function edges(CI::CartesianIndices)
     unique(indices)
 end
 
+_cells(dem) = eachindex(dem)
+_cells(dem::AbstractMatrix) = CartesianIndices(dem)
+
+cellarea(dem::AbstractMatrix, cell; cellsize = cellsize(dem)) =
+    abs(cellsize[1] * cellsize[2])
+
 """
-    filldepressions(dem::AbstractMatrix, mask=falses(size(dem)))
+    filldepressions(dem, mask=fill!(similar(dem, Bool), false))
 
 Performs the Priority-Flood algorithm [barnesPriorityFloodOptimalDepressionFilling2014](@cite) on the given digital elevation model (DEM) `dem` with an optional `mask`.
 
 # Arguments
-- `dem::AbstractMatrix`: A 2D array representing the digital elevation model (DEM).
-- `mask::AbstractMatrix{Bool}`: An optional 2D boolean array representing the mask. Cells with `true` values are treated as already filled (queued) and excluded from the computation. Defaults to all `false`.
+- `dem`: An indexed digital elevation model.
+- `mask`: An optional boolean array representing the mask. Cells with `true` values are treated as already filled (queued) and excluded from the computation. Defaults to all `false`.
 """
-function filldepressions(dem::AbstractMatrix, mask = falses(size(dem)))
+function filldepressions(dem, mask = fill!(similar(dem, Bool), false))
     filldepressions!(copy(dem), mask)
 end
-
-const Δ = CartesianIndex(1, 1)
 
 abstract type FlowDirectionMethod end
 
@@ -47,20 +47,20 @@ Base.@kwdef struct FD8 <: FlowDirectionMethod
     p::Float32 = 1.1
 end
 
-function filldepressions!(dem::AbstractMatrix, queued = falses(size(dem)))
-    open = PriorityQueue{CartesianIndex{2}, eltype(dem)}()
-    pit = DataStructures.Queue{CartesianIndex{2}}()
+function filldepressions!(dem, queued = fill!(similar(dem, Bool), false))
+    R = _cells(dem)
+    first_cell = first(R)
+    open = PriorityQueue{typeof(first_cell), eltype(dem)}()
+    pit = DataStructures.Queue{typeof(first_cell)}()
 
-    R = CartesianIndices(dem)
-    I_first, I_last = first(R), last(R)
-
-    @inbounds for cell in edges(R)
+    @inbounds for cell in outlets(dem)
         enqueue!(open, cell, dem[cell])
         queued[cell] = true  # queued
     end
     @inbounds while !isempty(open) || !isempty(pit)
         cell = !isempty(pit) ? DataStructures.dequeue!(pit) : dequeue!(open)
-        for ncell in max(I_first, cell - Δ):min(I_last, cell + Δ)
+        for ncell in neighbors(dem, cell)
+            ncell in R || continue
             (queued[ncell] || ncell == cell) && continue
             queued[ncell] = true
             if dem[ncell] <= dem[cell]
@@ -77,17 +77,18 @@ end
 nbs =
     CartesianIndex.([(-1, -1), (-1, 1), (1, -1), (1, 1), (-1, 0), (0, -1), (0, 1), (1, 0)])
 
-function watersheds(dem::AbstractMatrix, queued = falses(size(dem)))
-    open = PriorityQueue{CartesianIndex{2}, eltype(dem)}()
-    pit = DataStructures.Queue{CartesianIndex{2}}()
+neighbors(_, cell::CartesianIndex{2}) = (cell + nb for nb in nbs)
+
+function watersheds(dem, queued = fill!(similar(dem, Bool), false))
+    R = _cells(dem)
+    first_cell = first(R)
+    open = PriorityQueue{typeof(first_cell), eltype(dem)}()
+    pit = DataStructures.Queue{typeof(first_cell)}()
     labels = zeros(Int, size(dem))
     label = 1
-    pits = falses(size(dem))
+    pits = fill!(similar(dem, Bool), false)
 
-    R = CartesianIndices(dem)
-    I_first, I_last = first(R), last(R)
-
-    @inbounds for cell in edges(R)
+    @inbounds for cell in outlets(dem)
         enqueue!(open, cell, dem[cell])
         queued[cell] = true  # queued
     end
@@ -100,9 +101,7 @@ function watersheds(dem::AbstractMatrix, queued = falses(size(dem)))
             labels[cell] = label
             label += 1
         end
-        # for ncell in max(I_first, cell - Δ):min(I_last, cell + Δ)
-        for nb in nbs
-            ncell = cell + nb
+        for ncell in neighbors(dem, cell)
             ncell in R || continue
             (queued[ncell] || ncell == cell) && continue
             queued[ncell] = true
@@ -139,6 +138,7 @@ Accounts for the sign of `cellsize`: a GeoTIFF typically has negative `cellsize[
     i, j = Tuple(ci)
     CartesianIndex(i * Int(sign(cellsize[1])), j * Int(sign(cellsize[2])))
 end
+@inline _orient(direction, cellsize) = direction
 
 # Neighbor offsets in table convention (dim1=East+, dim2=North+), ordered by compass bearing
 nbb2 =
@@ -188,39 +188,42 @@ function infa(aspect)
 end
 
 """
-    flowaccumulation(dem::AbstractMatrix, closed=falses(size(dem)); method=DInf(), cellsize=cellsize(dem))
+    flowaccumulation(dem::AbstractMatrix, closed=fill!(similar(dem, Bool), false); method=DInf(), cellsize=cellsize(dem))
 
 Computes the flow accumulation of a digital elevation model (DEM) `dem` with an optional `closed` mask and a `method` for flow direction.
 Returns the flow accumulation and the flow direction (local drainage direction or ldd).
 """
 function flowaccumulation(
-    dem::AbstractMatrix,
-    closed = falses(size(dem));
+    dem,
+    closed = fill!(similar(dem, Bool), false);
     method = DInf(),
     cellsize = cellsize(dem),
 )
     acc = similar(dem, Float32)
-    acc .= abs(cellsize[1] * cellsize[2])
+    for cell in _cells(dem)
+        acc[cell] = cellarea(dem, cell; cellsize)
+    end
     flowaccumulation!(dem, acc, copy(closed); method, cellsize)
 end
 
 function flowaccumulation!(
-    dem::AbstractMatrix,
-    acc::AbstractMatrix{<:Real},
-    closed = falses(size(dem));
+    dem,
+    acc::AbstractArray{<:Real},
+    closed = fill!(similar(dem, Bool), false);
     method = DInf(),
     cellsize = cellsize(dem),
 )
-    dir = fill(CartesianIndex{2}(0, 0), size(dem))
+    R = _cells(dem)
+    L = similar(dem, Int64)
+    L .= LinearIndices(dem)
+    first_cell = first(R)
+    dir = similar(dem, typeof(first_cell - first_cell))
+    fill!(dir, first_cell - first_cell)
     order = ones(Int64, length(closed) - sum(closed))
 
-    open = PriorityQueue{CartesianIndex{2}, eltype(dem)}()
+    open = PriorityQueue{typeof(first_cell), eltype(dem)}()
 
-    R = CartesianIndices(dem)
-    L = LinearIndices(dem)
-    I_first, I_last = first(R), last(R)
-
-    @inbounds for cell in edges(R)
+    @inbounds for cell in outlets(dem)
         enqueue!(open, cell, dem[cell])
         closed[cell] = true
     end
@@ -229,9 +232,7 @@ function flowaccumulation!(
         cell = dequeue!(open)
         order[i] = L[cell]
         i += 1
-        # for ncell in max(I_first, cell - Δ):min(I_last, cell + Δ)
-        for nb in nbs
-            ncell = cell + nb
+        for ncell in neighbors(dem, cell)
             ncell in R || continue
             # skip visited and center cells
             (closed[ncell] || ncell == cell) && continue
@@ -249,11 +250,11 @@ end
 
 function _accumulate!(::D8, acc, order, dir, R, dem, cellsize)
     for i in reverse(order)
-        dir[i] == CartesianIndex(0, 0) && continue
+        iszero(dir[i]) && continue
         acc[R[i] + dir[i]] += acc[i]
     end
     output = similar(dem, FlowDirection{LDD, UInt8})
-    output .= getindex.(Ref(_ldd_ci2dir), _orient.(dir, Ref(cellsize)))
+    output .= FlowDirection{LDD}.(_orient.(dir, Ref(cellsize)))
     return output
 end
 function _accumulate!(::DInf, acc, order, dir, R, dem, cellsize)
@@ -380,6 +381,7 @@ end
 
 """
     topographic_wetness_index(dem::AbstractMatrix; method=DInf(), cellsize=cellsize(dem))
+    topographic_wetness_index(dem; method=D8(), cellsize=cellsize(dem))
 
 Computes the Topographic Wetness Index (TWI) of a digital elevation model (DEM) `dem` with an optional `method` for flow direction and a `cellsize`.
 """
@@ -392,14 +394,29 @@ function topographic_wetness_index(
     acc, _ = flowaccumulation(dem; method, cellsize)
     return @. log(acc / tand(s))
 end
+function topographic_wetness_index(
+    dem;
+    method = D8(),
+    cellsize = cellsize(dem),
+)
+    s = slope(dem; cellsize)
+    acc, _ = flowaccumulation(dem; method, cellsize)
+    return @. log(acc / tand(s))
+end
 @deprecate TWI topographic_wetness_index
 
 """
     stream_power_index(dem::AbstractMatrix; method=DInf(), cellsize=cellsize(dem))
+    stream_power_index(dem; method=D8(), cellsize=cellsize(dem))
 
 Computes the Stream Power Index (SPI) of a digital elevation model (DEM) `dem` with an optional `method` for flow direction and a `cellsize`.
 """
 function stream_power_index(dem::AbstractMatrix; method = DInf(), cellsize = cellsize(dem))
+    s = slope(dem; cellsize)
+    acc, _ = flowaccumulation(dem; method, cellsize)
+    return @. log(acc * tand(s))
+end
+function stream_power_index(dem; method = D8(), cellsize = cellsize(dem))
     s = slope(dem; cellsize)
     acc, _ = flowaccumulation(dem; method, cellsize)
     return @. log(acc * tand(s))
@@ -413,26 +430,30 @@ Compute Height Above Nearest Drainage (HAND, [nobreHeightNearestDrainage2011](@c
 with an optional `method` for flow direction, a `cellsize`, and a flow accumulation `threshold` for stream definition.
 """
 function height_above_nearest_drainage(
-    dem::AbstractMatrix;
-    method = DInf(),
+    dem;
+    method = D8(),
     cellsize = cellsize(dem),
     threshold = 100,
 )
-    dir = fill(CartesianIndex{2}(0, 0), size(dem))
-    closed = falses(size(dem))
+    R = _cells(dem)
+    L = similar(dem, Int64)
+    L .= LinearIndices(dem)
+    first_cell = first(R)
+    dir = similar(dem, typeof(first_cell - first_cell))
+    fill!(dir, first_cell - first_cell)
+    closed = similar(dem, Bool)
+    closed .= false
     order = ones(Int64, length(closed) - sum(closed))
 
     output = zero(dem)
     acc = similar(dem, Float32)
-    acc .= abs(cellsize[1] * cellsize[2])
+    for cell in R
+        acc[cell] = cellarea(dem, cell; cellsize)
+    end
 
-    open = PriorityQueue{CartesianIndex{2}, eltype(dem)}()
+    open = PriorityQueue{typeof(first_cell), eltype(dem)}()
 
-    R = CartesianIndices(dem)
-    L = LinearIndices(dem)
-    I_first, I_last = first(R), last(R)
-
-    @inbounds for cell in edges(R)
+    @inbounds for cell in outlets(dem)
         enqueue!(open, cell, dem[cell])
         closed[cell] = true
     end
@@ -441,9 +462,7 @@ function height_above_nearest_drainage(
         cell = dequeue!(open)
         order[i] = L[cell]
         i += 1
-        # for ncell in max(I_first, cell - Δ):min(I_last, cell + Δ)
-        for nb in nbs
-            ncell = cell + nb
+        for ncell in neighbors(dem, cell)
             ncell in R || continue
             # skip visited and center cells
             (closed[ncell] || ncell == cell) && continue
@@ -468,22 +487,21 @@ Computes the Height Above Nearest Drainage (HAND, [nobreHeightNearestDrainage201
 given a stream definition as a boolean `stream_mask`.
 """
 function height_above_nearest_drainage(
-    dem::AbstractMatrix,
-    stream_mask::AbstractMatrix{Bool},
+    dem,
+    stream_mask::AbstractArray{Bool},
 )
-    dir = fill(CartesianIndex{2}(0, 0), size(dem))
-    closed = falses(size(dem))
+    R = _cells(dem)
+    L = LinearIndices(dem)
+    first_cell = first(R)
+    dir = fill(first_cell - first_cell, size(dem))
+    closed = fill!(similar(dem, Bool), false)
     order = ones(Int64, length(closed) - sum(closed))
 
     output = zero(dem)
 
-    open = PriorityQueue{CartesianIndex{2}, eltype(dem)}()
+    open = PriorityQueue{typeof(first_cell), eltype(dem)}()
 
-    R = CartesianIndices(dem)
-    L = LinearIndices(dem)
-    I_first, I_last = first(R), last(R)
-
-    @inbounds for cell in edges(R)
+    @inbounds for cell in outlets(dem)
         enqueue!(open, cell, dem[cell])
         closed[cell] = true
     end
@@ -492,9 +510,7 @@ function height_above_nearest_drainage(
         cell = dequeue!(open)
         order[i] = L[cell]
         i += 1
-        # for ncell in max(I_first, cell - Δ):min(I_last, cell + Δ)
-        for nb in nbs
-            ncell = cell + nb
+        for ncell in neighbors(dem, cell)
             ncell in R || continue
             # skip visited and center cells
             (closed[ncell] || ncell == cell) && continue
@@ -511,24 +527,27 @@ function height_above_nearest_drainage(
 end
 
 function _hand!(output, order, dir, R, dem, stream_mask)
+    # TODO Use method to determine flow upstream instead of D8 here
     for i in order
         if stream_mask[i]
             # Relative height for stream is 0
             output[i] = 0.0
         elseif isfinite(dem[i]) && isfinite(dem[R[i] + dir[i]])
             # Otherwise, add the height difference with the downstream cell
-            # to the downstream cell's HAND value. Use max to avoid negative values
-            # in case of depressions. TODO Handle depressions better?
-            output[i] = output[R[i] + dir[i]] + max(0, (dem[i] - dem[R[i] + dir[i]]))
+            # to the downstream cell's HAND value.
+            output[i] = output[R[i] + dir[i]] + dem[i] - dem[R[i] + dir[i]]
         else
             output[i] = NaN
         end
+    end
+    for i in eachindex(output)
+        output[i] = max(zero(output[i]), output[i])
     end
     return output
 end
 
 """
-    depression_depth(dem::AbstractMatrix; filled=filldepressions(dem))
+    depression_depth(dem; filled=filldepressions(dem))
 
 Computes the depth of each cell below the filled surface.
 
@@ -539,12 +558,13 @@ depressions will have a depth of zero.
 This is useful for identifying potential cold air pooling zones and water
 retention areas.
 """
-function depression_depth(dem::AbstractMatrix; filled = filldepressions(dem))
+function depression_depth(dem; filled = filldepressions(dem))
     filled .- dem
 end
 
 """
     depression_volume(dem::AbstractMatrix; filled=filldepressions(dem), cellsize=cellsize(dem))
+    depression_volume(dem; filled=filldepressions(dem), cellsize=cellsize(dem))
 
 Computes the total volume of all depressions/basins in the DEM.
 
@@ -557,9 +577,23 @@ function depression_volume(
 )
     sum(filter(isfinite, depression_depth(dem; filled))) * prod(abs.(cellsize))
 end
+function depression_volume(
+    dem;
+    filled = filldepressions(dem),
+    cellsize = cellsize(dem),
+)
+    depth = depression_depth(dem; filled)
+    volume = 0.0
+    for cell in _cells(dem)
+        isfinite(depth[cell]) || continue
+        volume += depth[cell] * cellarea(dem, cell; cellsize)
+    end
+    return volume
+end
 
 """
     drainage_potential(dem::AbstractMatrix; method=DInf(), cellsize=cellsize(dem))
+    drainage_potential(dem; method=D8(), cellsize=cellsize(dem))
 
 Computes a drainage potential index indicating how well each cell drains.
 
@@ -573,6 +607,11 @@ Based on the relationship between slope and flow accumulation:
 `drainage = sin(slope) / log(1 + accumulation)`
 """
 function drainage_potential(dem::AbstractMatrix; method = DInf(), cellsize = cellsize(dem))
+    s = slope(dem; cellsize)
+    acc, _ = flowaccumulation(dem; method, cellsize)
+    return @. sind(s) / log1p(acc)
+end
+function drainage_potential(dem; method = D8(), cellsize = cellsize(dem))
     s = slope(dem; cellsize)
     acc, _ = flowaccumulation(dem; method, cellsize)
     return @. sind(s) / log1p(acc)

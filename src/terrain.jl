@@ -34,8 +34,11 @@ struct GDAL <: DerivativeMethod end
 
 """
     slope(dem::AbstractMatrix{<:Real}; cellsize=cellsize(dem), method=Horn(), exaggeration=1.0, direction=nothing)
+    slope(dem; cellsize=cellsize(dem), method=MDG(), exaggeration=1.0, direction=nothing)
 
 Slope is the rate of change between a cell and its neighbors.
+Non-matrix grids use [`MDG`](@ref) with dispatched `neighbors` and `celldistance`
+methods.
 
 # Arguments
 - `dem::AbstractMatrix{<:Real}`: Input digital elevation model.
@@ -54,6 +57,52 @@ function slope(
 )
     dst = similar(dem, Float32)
     slope!(method, dst, dem, cellsize, exaggeration, direction)
+end
+
+function slope(
+    dem;
+    cellsize = cellsize(dem),
+    method::MaximumDownwardGradient = MDG(),
+    exaggeration = 1.0,
+    direction::Union{Nothing, Real} = nothing,
+)
+    dst = similar(dem, Float32)
+    slope!(method, dst, dem, cellsize, exaggeration, direction)
+end
+
+function celldistance(
+    dem::AbstractMatrix,
+    from::CartesianIndex{2},
+    to::CartesianIndex{2};
+    cellsize = cellsize(dem),
+)
+    offset = to - from
+    hypot(offset[1] * cellsize[1], offset[2] * cellsize[2])
+end
+
+function slope!(
+    ::MaximumDownwardGradient,
+    dst,
+    dem,
+    cellsize,
+    exaggeration,
+    direction,
+)
+    isnothing(direction) || throw(ArgumentError("Direction is not supported for MDG."))
+    cells = eachindex(dem)
+    for cell in cells
+        gradient = 0.0
+        for neighbor in neighbors(dem, cell)
+            neighbor in cells || continue
+            gradient = max(
+                gradient,
+                abs(dem[neighbor] - dem[cell]) /
+                celldistance(dem, cell, neighbor; cellsize),
+            )
+        end
+        dst[cell] = atand(gradient * exaggeration)
+    end
+    return dst
 end
 
 function slope!(::Horn, dst, dem::AbstractMatrix{<:Real}, cellsize, exaggeration, direction)
