@@ -80,6 +80,32 @@ function celldistance(
     hypot(offset[1] * cellsize[1], offset[2] * cellsize[2])
 end
 
+"""
+    cellbearing(dem, from, to)
+
+Return the bearing from cell `from` to cell `to` in degrees clockwise from local north.
+"""
+function cellbearing(
+    dem::AbstractMatrix,
+    from::CartesianIndex{2},
+    to::CartesianIndex{2},
+)
+    _cellbearing(dem, from, to, cellsize(dem))
+end
+
+function _cellbearing(
+    dem::AbstractMatrix,
+    from::CartesianIndex{2},
+    to::CartesianIndex{2},
+    cellsize,
+)
+    offset = to - from
+    east = offset[1] * cellsize[1]
+    north = offset[2] * cellsize[2]
+    mod(atand(east, north), 360)
+end
+_cellbearing(dem, from, to, cellsize) = cellbearing(dem, from, to)
+
 function slope!(
     ::MaximumDownwardGradient,
     dst,

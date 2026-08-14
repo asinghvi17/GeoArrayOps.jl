@@ -74,8 +74,8 @@ function filldepressions!(dem, queued = fill!(similar(dem, Bool), false))
     return dem
 end
 
-nbs =
-    CartesianIndex.([(-1, -1), (-1, 1), (1, -1), (1, 1), (-1, 0), (0, -1), (0, 1), (1, 0)])
+const nbs =
+    CartesianIndex.(((-1, -1), (-1, 1), (1, -1), (1, 1), (-1, 0), (0, -1), (0, 1), (1, 0)))
 
 neighbors(_, cell::CartesianIndex{2}) = (cell + nb for nb in nbs)
 
@@ -140,51 +140,82 @@ Accounts for the sign of `cellsize`: a GeoTIFF typically has negative `cellsize[
 end
 @inline _orient(direction, cellsize) = direction
 
-# Neighbor offsets in table convention (dim1=East+, dim2=North+), ordered by compass bearing
-nbb2 =
-    CartesianIndex.([
-        (0, 1),    # N  - 0°
-        (1, 1),    # NE - 45°
-        (1, 0),    # E  - 90°
-        (1, -1),   # SE - 135°
-        (0, -1),   # S  - 180°
-        (-1, -1),  # SW - 225°
-        (-1, 0),   # W  - 270°
-        (-1, 1),   # NW - 315°
-        (0, 1),    # N  - 0°   (wrap)
-        (1, 1),    # NE - 45°  (wrap)
-        (1, 0),    # E  - 90°  (wrap)
-        (1, -1),   # SE - 135° (wrap)
-    ])
+_relativeindices(::Type{R}, direction::FlowDirection, center, cellsize) where {R} =
+    decompose(R, direction, center)
+_relativeindices(
+    ::Type{CartesianIndex{2}},
+    direction::FlowDirection,
+    center,
+    cellsize,
+) =
+    (
+        _orient(relative, cellsize) for
+        relative in decompose(CartesianIndex{2}, direction)
+    )
 
-function infc(aspect, cellsize)
-    # Normalize compass bearing to 0-360 range (0° = North, clockwise)
-    aspect = mod(aspect, 360)
-
-    # Each direction covers a 45° sector
-    sector = floor(Int, aspect / 45)
-
-    # Get the two neighboring directions (in table convention)
-    dir1_idx = sector + 1
-    dir2_idx = (sector + 1) % 8 + 1
-
-    # Convert from table to pixel convention
-    return _orient(nbb2[dir1_idx], cellsize), _orient(nbb2[dir2_idx], cellsize)
+_directioncode(dem::AbstractMatrix, direction, cellsize) =
+    _d8_ci2dir[_orient(direction, cellsize)]
+function _directioncode(dem, direction, cellsize)
+    UInt8(Int(FlowDirection{D8D}(direction)))
 end
 
-function infa(aspect)
-    # Normalize aspect to 0-360 range
+function _flowneighbors(dem, cell, aspect, cellsize)
     aspect = mod(aspect, 360)
+    lower_cell = upper_cell = cell
+    lower_gap = upper_gap = Inf
+    found = false
+    for neighbor in neighbors(dem, cell)
+        found = true
+        bearing = _cellbearing(dem, cell, neighbor, cellsize)
+        candidate_lower_gap = mod(aspect - bearing, 360)
+        candidate_upper_gap = mod(bearing - aspect, 360)
+        if candidate_lower_gap < lower_gap
+            lower_cell = neighbor
+            lower_gap = candidate_lower_gap
+        end
+        if candidate_upper_gap < upper_gap
+            upper_cell = neighbor
+            upper_gap = candidate_upper_gap
+        end
+    end
 
-    # Find position within 45° sector
-    sector_angle = mod(aspect, 45)
+    found || return nothing
+    lower_cell == upper_cell && return lower_cell, upper_cell, 1.0, 0.0
+    gap = lower_gap + upper_gap
+    return lower_cell, upper_cell, upper_gap / gap, lower_gap / gap
+end
 
-    # Calculate weights for the two directions
-    # Weight decreases linearly from 1 to 0 as we move away from the direction
-    weight2 = sector_angle / 45
-    weight1 = 1 - weight2
+_dinf_aspects(dem::AbstractMatrix, cellsize) =
+    aspect(dem; method = Horn(), cellsize = abs.(cellsize))
+_dinf_aspects(dem, cellsize) = nothing
+_dinf_aspect(aspects, dem, cell, cellsize) = aspects[cell]
+_dinf_aspect(::Nothing, dem, cell, cellsize) = _localaspect(dem, cell, cellsize)
 
-    return weight1, weight2
+function _localaspect(dem, cell, cellsize)
+    xx = xy = yy = xz = yz = 0.0
+    cells = _cells(dem)
+    center = dem[cell]
+    for neighbor in neighbors(dem, cell)
+        neighbor in cells || continue
+        distance = celldistance(dem, cell, neighbor; cellsize)
+        iszero(distance) && continue
+        bearing = _cellbearing(dem, cell, neighbor, cellsize)
+        east = distance * sind(bearing)
+        north = distance * cosd(bearing)
+        elevation = dem[neighbor] - center
+        xx += east^2
+        xy += east * north
+        yy += north^2
+        xz += east * elevation
+        yz += north * elevation
+    end
+
+    determinant = xx * yy - xy^2
+    iszero(determinant) && return NaN
+    east_gradient = (xz * yy - yz * xy) / determinant
+    north_gradient = (yz * xx - xz * xy) / determinant
+    iszero(east_gradient) && iszero(north_gradient) && return NaN
+    return mod(atand(-east_gradient, -north_gradient), 360)
 end
 
 """
@@ -258,63 +289,70 @@ function _accumulate!(::D8, acc, order, dir, R, dem, cellsize)
     return output
 end
 function _accumulate!(::DInf, acc, order, dir, R, dem, cellsize)
-    asp = aspect(dem; method = Horn(), cellsize = abs.(cellsize))
-    visited = falses(size(acc))
+    aspects = _dinf_aspects(dem, cellsize)
+    visited = fill!(similar(dem, Bool), false)
     output = similar(dem, FlowDirection{D8D, UInt8})
     fill!(output, 0)
 
     for i in reverse(order)
-        dir[i] == CartesianIndex(0, 0) && continue
-        aspect = asp[i]
+        iszero(dir[i]) && continue
+        cell = R[i]
+        aspect = _dinf_aspect(aspects, dem, cell, cellsize)
 
         if !isfinite(aspect)
-            acc[R[i] + dir[i]] += acc[i]
-            output[i] = _d8_ci2dir[_orient(dir[i], cellsize)]
+            acc[cell + dir[i]] += acc[i]
+            output[i] = _directioncode(dem, dir[i], cellsize)
             visited[i] = true
             continue
         end
 
-        a, b = infc(aspect, cellsize)
-        aa, bb = infa(aspect)
+        flowneighbors = _flowneighbors(dem, cell, aspect, cellsize)
+        if isnothing(flowneighbors)
+            acc[cell + dir[i]] += acc[i]
+            output[i] = _directioncode(dem, dir[i], cellsize)
+            visited[i] = true
+            continue
+        end
+        acell, bcell, aa, bb = flowneighbors
+        a, b = acell - cell, bcell - cell
 
         # Depression
         if (a != dir[i] && b != dir[i])
-            acc[R[i] + dir[i]] += acc[i]
-            output[i] = _d8_ci2dir[_orient(dir[i], cellsize)]
+            acc[cell + dir[i]] += acc[i]
+            output[i] = _directioncode(dem, dir[i], cellsize)
             visited[i] = true
             continue
         end
 
         # Scale flows correctly at the edges
-        if !(R[i] + a in R) || visited[R[i] + a]
+        if !(acell in R) || visited[acell]
             aa = 0
             bb = 1
         end
-        if !(R[i] + b in R) || visited[R[i] + b]
+        if !(bcell in R) || visited[bcell]
             aa = 1
             bb = 0
         end
 
         dirs = zero(UInt8)
-        if R[i] + a in R && aa > 0
-            acc[R[i] + a] += acc[i] * aa
-            dirs |= _d8_ci2dir[_orient(a, cellsize)]
+        if acell in R && aa > 0
+            acc[acell] += acc[i] * aa
+            dirs |= _directioncode(dem, a, cellsize)
         end
-        if R[i] + b in R && bb > 0
-            acc[R[i] + b] += acc[i] * bb
-            dirs |= _d8_ci2dir[_orient(b, cellsize)]
+        if bcell in R && bb > 0
+            acc[bcell] += acc[i] * bb
+            dirs |= _directioncode(dem, b, cellsize)
         end
         output[i] = dirs
-        if visited[R[i] + a] && visited[R[i] + b]
+        if acell in R && bcell in R && visited[acell] && visited[bcell]
             error()
-            acc[R[i] + dir[i]] += acc[i]
         end
         visited[i] = true
     end
     return output
 end
 
-function _accumulate!(fd8::FD8, acc, order, dir, R, dem, cellsize)
+function _accumulate!(fd8::FD8, acc, order, dir, R, dem::AbstractMatrix, cellsize)
     # Derive contour lengths, which is used to calculate the weights
     # Uses the algorithm by Quinn et al. (1991), L1=0.5 L2=0.354 for δx=δy=1
     # TODO Check whether just using the angles is enough.
@@ -342,6 +380,7 @@ function _accumulate!(fd8::FD8, acc, order, dir, R, dem, cellsize)
     Σw = 0.0
     for i in reverse(order)
         dir[i] == CartesianIndex(0, 0) && continue
+        fill!(weights, 0)
         Σw = 0.0
         # TODO Fix this distance with actual distances
         for (ri, dist) in enumerate(dists)
@@ -374,9 +413,73 @@ function _accumulate!(fd8::FD8, acc, order, dir, R, dem, cellsize)
         end
         output[i] = dirs
         visited[i] = true
-        fill!(weights, 0)
     end
     return output
+end
+
+function _accumulate!(fd8::FD8, acc, order, dir, R, dem, cellsize)
+    visited = fill!(similar(dem, Bool), false)
+    output = similar(dem, FlowDirection{D8D, UInt8})
+    fill!(output, 0)
+
+    for i in reverse(order)
+        iszero(dir[i]) && continue
+        cell = R[i]
+        total_weight = 0.0
+        downstream = cell + dir[i]
+        downstream_weight = 0.0
+        for neighbor in neighbors(dem, cell)
+            neighbor in R || continue
+            weight = _fd8weight(fd8, dem, cell, neighbor, R, visited, cellsize)
+            total_weight += weight
+            neighbor == downstream && (downstream_weight = weight)
+        end
+
+        if iszero(total_weight) || iszero(downstream_weight)
+            acc[downstream] += acc[i]
+            output[i] = _directioncode(dem, dir[i], cellsize)
+            visited[i] = true
+            continue
+        end
+
+        directions = zero(UInt8)
+        for neighbor in neighbors(dem, cell)
+            neighbor in R || continue
+            weight = _fd8weight(fd8, dem, cell, neighbor, R, visited, cellsize)
+            iszero(weight) && continue
+            acc[neighbor] += acc[i] * (weight / total_weight)
+            directions |= _directioncode(dem, neighbor - cell, cellsize)
+        end
+        output[i] = directions
+        visited[i] = true
+    end
+    return output
+end
+
+function _fd8weight(fd8, dem, cell, neighbor, cells, visited, cellsize)
+    visited[neighbor] && return 0.0
+    difference = dem[cell] - dem[neighbor]
+    (difference < 0 || isnan(difference)) && return 0.0
+
+    distance = celldistance(dem, cell, neighbor; cellsize)
+    iszero(distance) && return 0.0
+    bearing = _cellbearing(dem, cell, neighbor, cellsize)
+    previous_gap = next_gap = Inf
+    for other in neighbors(dem, cell)
+        (other == neighbor || !(other in cells)) && continue
+        other_bearing = _cellbearing(dem, cell, other, cellsize)
+        candidate_previous_gap = mod(bearing - other_bearing, 360)
+        candidate_next_gap = mod(other_bearing - bearing, 360)
+        iszero(candidate_previous_gap) ||
+            (previous_gap = min(previous_gap, candidate_previous_gap))
+        iszero(candidate_next_gap) || (next_gap = min(next_gap, candidate_next_gap))
+    end
+    (!isfinite(previous_gap) || !isfinite(next_gap)) && return 0.0
+
+    contour_length =
+        distance / 2 * (tand(previous_gap / 2) + tand(next_gap / 2))
+    contour_length > 0 || return 0.0
+    return (difference / distance * contour_length)^fd8.p
 end
 
 """
@@ -474,9 +577,11 @@ function height_above_nearest_drainage(
         end
     end
 
-    _accumulate!(method, acc, order, dir, R, dem, cellsize)
+    flowdirs = _accumulate!(method, acc, order, dir, R, dem, cellsize)
     stream_mask = acc .>= threshold
-    _hand!(output, order, dir, R, dem, stream_mask)
+    _burn_streams!(stream_mask, order, dir, R)
+    _fill_flow_depressions!(acc, order, flowdirs, R, dem, cellsize)
+    _hand!(output, order, flowdirs, R, acc, stream_mask, cellsize)
     return output
 end
 
@@ -527,7 +632,6 @@ function height_above_nearest_drainage(
 end
 
 function _hand!(output, order, dir, R, dem, stream_mask)
-    # TODO Use method to determine flow upstream instead of D8 here
     for i in order
         if stream_mask[i]
             # Relative height for stream is 0
@@ -538,6 +642,71 @@ function _hand!(output, order, dir, R, dem, stream_mask)
             output[i] = output[R[i] + dir[i]] + dem[i] - dem[R[i] + dir[i]]
         else
             output[i] = NaN
+        end
+    end
+    for i in eachindex(output)
+        output[i] = max(zero(output[i]), output[i])
+    end
+    return output
+end
+
+function _burn_streams!(stream_mask, order, dir, R)
+    for i in reverse(order)
+        stream_mask[i] || continue
+        iszero(dir[i]) && continue
+        stream_mask[R[i] + dir[i]] = true
+    end
+    return stream_mask
+end
+
+function _fill_flow_depressions!(filled, order, flowdirs, R, dem, cellsize)
+    RelativeIndex = typeof(first(R) - first(R))
+    fill!(filled, NaN)
+    for i in order
+        cell = R[i]
+        elevation = dem[i]
+        if !isfinite(elevation)
+            filled[i] = NaN
+            continue
+        end
+        if !ispit(flowdirs[i])
+            for relative in _relativeindices(RelativeIndex, flowdirs[i], cell, cellsize)
+                downstream = cell + relative
+                downstream in R || continue
+                isfinite(filled[downstream]) || continue
+                elevation = max(elevation, filled[downstream])
+            end
+        end
+        filled[i] = elevation
+    end
+    return filled
+end
+
+function _hand!(output, order, flowdirs, R, filled, stream_mask, cellsize)
+    RelativeIndex = typeof(first(R) - first(R))
+    for i in order
+        cell = R[i]
+        if stream_mask[i] || ispit(flowdirs[i])
+            output[i] = 0.0
+        elseif !isfinite(filled[i])
+            output[i] = NaN
+        else
+            found = false
+            best = zero(eltype(output))
+            for relative in _relativeindices(RelativeIndex, flowdirs[i], cell, cellsize)
+                downstream = cell + relative
+                downstream in R || continue
+                if !isfinite(filled[downstream]) || !isfinite(output[downstream])
+                    continue
+                end
+                candidate =
+                    output[downstream] + filled[i] - filled[downstream]
+                if !found || candidate < best
+                    best = candidate
+                    found = true
+                end
+            end
+            output[i] = found ? best : NaN
         end
     end
     for i in eachindex(output)

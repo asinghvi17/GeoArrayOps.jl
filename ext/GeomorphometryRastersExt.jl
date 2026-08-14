@@ -42,4 +42,7 @@ function _crstrait(dem::Raster)
     return Rasters.GI.UnknownTrait()
 end
 
+Geomorphometry.outlets(r::Raster) = Geomorphometry.outlets(parent(r))
+Geomorphometry.neighbors(r::Raster, cell::CartesianIndex{2}) = Geomorphometry.neighbors(parent(r), cell)
+
 end # module
