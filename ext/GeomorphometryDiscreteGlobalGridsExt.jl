@@ -76,16 +76,22 @@ function GM.cellbearing(r::IGeo7Raster, from::Cell, to::Cell)
     return mod(rad2deg(atan(east, north)), 360.0)
 end
 
-const LDD_CODES = (0x05, 0x06, 0x09, 0x07, 0x04, 0x01, 0x03)
-const D8D_CODES = (0x00, 0x01, 0x80, 0x20, 0x10, 0x08, 0x02)
+const IGEO7_TO_LDD = (0x05, 0x06, 0x09, 0x07, 0x04, 0x01, 0x03)
+const IGEO7_TO_D8D = (0x00, 0x01, 0x80, 0x20, 0x10, 0x08, 0x02)
 
 GM.FlowDirection{GM.LDD}(d::RelativeIndex) =
-    GM.FlowDirection{GM.LDD}(LDD_CODES[DGG.directioncode(d)+1])
+    GM.FlowDirection{GM.LDD}(IGEO7_TO_LDD[DGG.directioncode(d)+1])
 GM.FlowDirection{GM.D8D}(d::RelativeIndex) =
-    GM.FlowDirection{GM.D8D}(D8D_CODES[DGG.directioncode(d)+1])
+    GM.FlowDirection{GM.D8D}(IGEO7_TO_D8D[DGG.directioncode(d)+1])
 
-const LDD_TO_IGEO7 = (0x05, 0xff, 0x06, 0x04, 0x00, 0x01, 0x03, 0xff, 0x02)
-const D8D_BIT_TO_IGEO7 = (0x01, 0x06, 0xff, 0x05, 0x04, 0x03, 0xff, 0x02)
+function _inverse_code(codes, value)
+    index = findfirst(==(UInt8(value)), codes)
+    return isnothing(index) ? 0xff : UInt8(index - 1)
+end
+
+const LDD_TO_IGEO7 = ntuple(value -> _inverse_code(IGEO7_TO_LDD, value), 9)
+const D8D_BIT_TO_IGEO7 =
+    ntuple(bit -> _inverse_code(IGEO7_TO_D8D, 1 << (bit - 1)), 8)
 
 @inline function _directioncode(direction::GM.FlowDirection{GM.LDD})
     value = Int(direction)
@@ -119,13 +125,13 @@ function GM.decompose(
     return Iterators.map(GM.decompose(direction)) do component
         code = _directioncode(component)
         iszero(code) && return RelativeIndex(center, 0)
-        neighbors = DGG.neighbors(
+        adjacent = DGG.neighbors(
             DGG.levelgrid(DGG.IGeo7System(), DGG.level(center)),
             center,
         )
-        code <= length(neighbors) ||
+        code <= length(adjacent) ||
             throw(ArgumentError("direction $code does not exist at pentagon $center"))
-        return neighbors[code] - center
+        return adjacent[code] - center
     end
 end
 
