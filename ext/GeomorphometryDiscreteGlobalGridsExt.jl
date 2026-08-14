@@ -5,13 +5,16 @@ import Geomorphometry as GM
 import Rasters
 using Rasters: Raster
 
-const IGeo7Raster{T,D} = Raster{T,1,D} where {T,D<:Tuple{<:DGG.Cells}}
-const RelativeIndex = DGG.RelativeIGEO7Index
+const IGeo7Raster{T,D} =
+    Raster{T,1,D} where {T,D<:Tuple{<:DGG.Cells{<:DGG.CellLookup{DGG.Z7Cell}}}}
+const RelativeIndex = DGG.RelativeZ7Cell
 const Cell = DGG.Z7Cell
 
 _lookup(r::IGeo7Raster) = Rasters.lookup(r, DGG.Cells)
 _cells(r::IGeo7Raster) = parent(_lookup(r))
 
+# `CellVector` is lazy and its `in` method searches compressed position windows
+# rather than scanning cell ids.
 Base.eachindex(r::IGeo7Raster) = _cells(r)
 
 function _position(r::IGeo7Raster, c::Cell)
@@ -73,16 +76,6 @@ function GM.cellbearing(r::IGeo7Raster, from::Cell, to::Cell)
     return mod(rad2deg(atan(east, north)), 360.0)
 end
 
-const DIRECTION_HEX = (
-    DGG.HexIndex(0, 0, 0),
-    DGG.HexIndex(1, -1, 0),
-    DGG.HexIndex(1, 0, -1),
-    DGG.HexIndex(0, 1, -1),
-    DGG.HexIndex(-1, 1, 0),
-    DGG.HexIndex(-1, 0, 1),
-    DGG.HexIndex(0, -1, 1),
-)
-
 const LDD_CODES = (0x05, 0x06, 0x09, 0x07, 0x04, 0x01, 0x03)
 const D8D_CODES = (0x00, 0x01, 0x80, 0x20, 0x10, 0x08, 0x02)
 
@@ -125,7 +118,14 @@ function GM.decompose(
 )
     return Iterators.map(GM.decompose(direction)) do component
         code = _directioncode(component)
-        RelativeIndex(DIRECTION_HEX[code+1], DGG.level(center))
+        iszero(code) && return RelativeIndex(center, 0)
+        neighbors = DGG.neighbors(
+            DGG.levelgrid(DGG.IGeo7System(), DGG.level(center)),
+            center,
+        )
+        code <= length(neighbors) ||
+            throw(ArgumentError("direction $code does not exist at pentagon $center"))
+        return neighbors[code] - center
     end
 end
 
