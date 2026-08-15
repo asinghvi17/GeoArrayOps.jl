@@ -19,7 +19,8 @@ Base.eachindex(r::IGeo7Raster) = _cells(r)
 
 function _position(r::IGeo7Raster, c::Cell)
     p = DGG.cellposition(_lookup(r), c)
-    p === nothing && throw(BoundsError(r, c))
+    # Tuple-wrapped: `showerror` iterates the index field, and a `Cell` is not iterable.
+    isnothing(p) && throw(BoundsError(r, (c,)))
     return p
 end
 
