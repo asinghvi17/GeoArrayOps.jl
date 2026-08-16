@@ -32,13 +32,153 @@ Base.checkbounds(::Type{Bool}, r::IGeo7Raster, c::Cell) =
 
 GM.neighbors(r::IGeo7Raster, c::Cell) = DGG.neighbors(_lookup(r), c)
 
+# --- the neighborhood forms -------------------------------------------------
+
+GM.neighbors(r::IGeo7Raster) = DGG.neighbors(_cells(r))
+
+function GM.mapneighbors(f::F, r::IGeo7Raster; order = nothing,
+        threaded = true) where {F}
+    out = DGG.mapneighbors(f, _cells(r), parent(r);
+        order = order === nothing ? DGG.StorageOrder() : order, threaded)
+    return Rasters.rebuild(r; data = out)
+end
+
+# The rim: cells whose clipped ring is shorter than their complete-level
+# degree. One threaded sweep instead of two resolved neighbor sets per cell.
 function GM.outlets(r::IGeo7Raster)
     cells = _cells(r)
     complete = DGG.levelgrid(DGG.system(cells), DGG.level(cells))
-    return Cell[
-        c for c in cells
-        if length(DGG.neighbors(cells, c)) < length(DGG.neighbors(complete, c))
-    ]
+    rim = DGG.mapneighbors(
+        (c, nbrs) -> length(nbrs) < DGG.neighborcount(complete, DGG.cellid(c)),
+        cells; threaded = true)
+    return Cell[cells[p] for p in eachindex(rim) if rim[p]]
+end
+
+# --- the priority-flood queue phase in position space -----------------------
+
+# Settle every cell from the rim inward in ascending elevation — the queue
+# phase `flowaccumulation!` and `height_above_nearest_drainage` share — with
+# positions as the only currency: the queue is keyed on Int positions with a
+# dense locator (no hashing), each cell's clipped ring is one row of a
+# `HaloTable` built once, and the neighbor that settles a cell is recorded as
+# a downstream POSITION in `down`. `order` receives the settle sequence;
+# positions closed on entry are skipped exactly as the cell-indexed loop
+# skips them, and every rim cell is seeded regardless of that mask.
+function _settle!(order::Vector{Int64}, down::Vector{Int}, closedv, zv, cv,
+        table)
+    n = length(cv)
+    complete = DGG.levelgrid(DGG.system(cv), DGG.level(cv))
+    open = GM.FastPriorityQueue{eltype(zv)}(n)
+    @inbounds for p in 1:n
+        if length(table[p]) < DGG.neighborcount(complete, cv[p])
+            GM.enqueue!(open, p, zv[p])
+            closedv[p] = true
+        end
+    end
+    i = 1
+    @inbounds while !isempty(open)
+        p = GM.dequeue!(open)
+        order[i] = p
+        i += 1
+        for q in table[p]
+            closedv[q] && continue
+            closedv[q] = true
+            down[q] = p
+            GM.enqueue!(open, q, zv[q])
+        end
+    end
+    return nothing
+end
+
+# The relative-cell directions the settle implies, materialized once per cell
+# from the downstream positions; zero where nothing settled the cell.
+function _directions(dem::IGeo7Raster, cv, down)
+    zrel = first(cv) - first(cv)
+    dir = similar(dem, typeof(zrel))
+    dirv = parent(dir)
+    @inbounds for p in eachindex(down)
+        dirv[p] = down[p] == 0 ? zrel : cv[down[p]] - cv[p]
+    end
+    return dir
+end
+
+function GM.flowaccumulation(dem::IGeo7Raster,
+        closed = fill!(similar(dem, Bool), false);
+        method = GM.DInf(), cellsize = GM.cellsize(dem))
+    cv = _cells(dem)
+    acc = similar(dem, Float32)
+    accv = parent(acc)
+    @inbounds for p in eachindex(accv)
+        accv[p] = DGG.IGeo7.cell_area(DGG.rawid(cv[p]))
+    end
+    return GM.flowaccumulation!(dem, acc, copy(closed); method, cellsize)
+end
+
+function GM.flowaccumulation!(dem::IGeo7Raster, acc::AbstractArray{<:Real},
+        closed = fill!(similar(dem, Bool), false);
+        method = GM.DInf(), cellsize = GM.cellsize(dem))
+    cv = _cells(dem)
+    closedv = parent(closed)
+    order = ones(Int64, length(cv) - count(closedv))
+    down = zeros(Int, length(cv))
+    table = DGG.HaloTable(cv)
+    _settle!(order, down, closedv, parent(dem), cv, table)
+    return _postsettle(method, dem, acc, order, down, cv, cellsize)
+end
+
+# D8 needs no cell arithmetic after the settle: accumulation follows the
+# downstream positions and the persisted directions — cell-relative, exactly
+# as the generic path writes them — are encoded once per cell.
+function _postsettle(::GM.D8, dem, acc, order, down, cv, cellsize)
+    accv = parent(acc)
+    @inbounds for j in reverse(eachindex(order))
+        p = order[j]
+        d = down[p]
+        d == 0 && continue
+        accv[d] += accv[p]
+    end
+    zrel = first(cv) - first(cv)
+    output = similar(dem, GM.FlowDirection{GM.LDD, UInt8})
+    outv = parent(output)
+    @inbounds for p in eachindex(down)
+        rel = down[p] == 0 ? zrel : cv[down[p]] - cv[p]
+        outv[p] = GM.FlowDirection{GM.LDD}(rel)
+    end
+    return acc, output
+end
+
+# The DInf and FD8 accumulate phases read the DEM's geometry around each
+# cell, so they keep the generic implementation; the settle's product is
+# materialized into the direction raster they consume.
+function _postsettle(method::GM.FlowDirectionMethod, dem, acc, order, down,
+        cv, cellsize)
+    dir = _directions(dem, cv, down)
+    dirs = GM._accumulate!(method, acc, order, dir, cv, dem, cellsize)
+    return acc, dirs
+end
+
+function GM.height_above_nearest_drainage(dem::IGeo7Raster;
+        method = GM.D8(), cellsize = GM.cellsize(dem), threshold = 100)
+    cv = _cells(dem)
+    n = length(cv)
+    output = zero(dem)
+    acc = similar(dem, Float32)
+    accv = parent(acc)
+    @inbounds for p in 1:n
+        accv[p] = DGG.IGeo7.cell_area(DGG.rawid(cv[p]))
+    end
+    closed = fill!(similar(dem, Bool), false)
+    order = ones(Int64, n)
+    down = zeros(Int, n)
+    table = DGG.HaloTable(cv)
+    _settle!(order, down, parent(closed), parent(dem), cv, table)
+    dir = _directions(dem, cv, down)
+    flowdirs = GM._accumulate!(method, acc, order, dir, cv, dem, cellsize)
+    stream_mask = acc .>= threshold
+    GM._burn_streams!(stream_mask, order, dir, cv)
+    GM._fill_flow_depressions!(acc, order, flowdirs, cv, dem, cellsize)
+    GM._hand!(output, order, flowdirs, cv, acc, stream_mask, cellsize)
+    return output
 end
 
 function GM.cellarea(r::IGeo7Raster, c::Cell; cellsize=nothing)

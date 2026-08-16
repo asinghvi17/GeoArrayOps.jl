@@ -30,6 +30,7 @@ using QuickHeaps: FastPriorityQueue, PriorityQueue, enqueue!, dequeue!
 using KernelAbstractions: KernelAbstractions, @kernel, @index, @Const, get_backend
 
 include("utils.jl")
+include("neighborhood.jl")
 include("relative.jl")
 include("pmf.jl")
 include("smf.jl")
