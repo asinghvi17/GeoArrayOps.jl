@@ -48,7 +48,6 @@ function topographic_position_index(dem)
         total = 0.0
         count = 0
         for neighbor in neighbors(dem, cell)
-            neighbor in cells || continue
             total += dem[neighbor]
             count += 1
         end

@@ -77,7 +77,16 @@ end
 const nbs =
     CartesianIndex.(((-1, -1), (-1, 1), (1, -1), (1, 1), (-1, 0), (0, -1), (0, 1), (1, 0)))
 
-neighbors(_, cell::CartesianIndex{2}) = (cell + nb for nb in nbs)
+"""
+    neighbors(dem, cell)
+
+Iterator over the cells adjacent to `cell` in `dem` — for arrays, the Moore
+neighborhood. Implementations return only in-domain indices of `dem`; kernels
+index with them directly (several under `@inbounds`) without re-checking
+membership.
+"""
+neighbors(dem, cell::CartesianIndex{2}) =
+    Iterators.filter(in(CartesianIndices(dem)), cell + nb for nb in nbs)
 
 function watersheds(dem, queued = fill!(similar(dem, Bool), false))
     R = _cells(dem)
@@ -264,7 +273,6 @@ function flowaccumulation!(
         order[i] = L[cell]
         i += 1
         for ncell in neighbors(dem, cell)
-            ncell in R || continue
             # skip visited and center cells
             (closed[ncell] || ncell == cell) && continue
 
