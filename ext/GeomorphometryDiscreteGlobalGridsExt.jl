@@ -228,6 +228,20 @@ function GM.height_above_nearest_drainage(dem::IGeo7Raster;
     return output
 end
 
+# The IGeo7 threshold method above is the only DGGS HAND implementation; keep
+# the generic position-space methods, which need relative-cell arithmetic,
+# unreachable from cell-axis rasters.
+GM.height_above_nearest_drainage(dem::CellsRaster; kw...) =
+    throw(ArgumentError(
+        "height_above_nearest_drainage needs relative-cell arithmetic, " *
+        "which only the IGeo7 backend provides"))
+
+GM.height_above_nearest_drainage(dem::CellsRaster,
+    stream_mask::AbstractArray{Bool}) = throw(ArgumentError(
+    "height_above_nearest_drainage with a stream mask is not implemented " *
+    "for DGGS rasters; use the threshold form, which the IGeo7 backend " *
+    "provides"))
+
 function GM.cellarea(r::CellsRaster, c::CellIndex; cellsize=nothing)
     _position(r, c)
     return _cellarea(DGG.levelgrid(DGG.system(_cellvector(r)), DGG.level(c)), c)
