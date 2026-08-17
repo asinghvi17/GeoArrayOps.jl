@@ -18,12 +18,12 @@ const CellIndex = DGG.AbstractCellIndex
 const R_AUTHALIC = DGG.ISEA.R_AUTHALIC
 
 _lookup(r::CellsRaster) = Rasters.lookup(r, DGG.Cells)
-_cells(r::CellsRaster) = parent(_lookup(r))
+_cellvector(r::CellsRaster) = parent(_lookup(r))
 _completegrid(cells) = DGG.levelgrid(DGG.system(cells), DGG.level(cells))
 
 # `CellVector` is lazy and its `in` method searches compressed position windows
 # rather than scanning cell ids.
-Base.eachindex(r::CellsRaster) = _cells(r)
+Base.eachindex(r::CellsRaster) = _cellvector(r)
 
 function _position(r::CellsRaster, c::CellIndex)
     p = DGG.cellposition(_lookup(r), c)
@@ -42,18 +42,17 @@ GM.neighbors(r::CellsRaster, c::CellIndex) = DGG.neighbors(_lookup(r), c)
 
 # Neighborhood traversal
 
-GM.neighbors(r::CellsRaster) = DGG.neighbors(_cells(r))
+GM.neighbors(r::CellsRaster) = DGG.neighbors(r)
 
-function GM.mapneighbors(f::F, r::CellsRaster; order = nothing,
-        threaded = true) where {F}
-    out = DGG.mapneighbors(f, _cells(r), parent(r);
+# DGG's array entry point resolves the `Cells` dimension and rebuilds the
+# raster itself; `Values()` hands `f` the cell's and neighbours' scalars.
+GM.mapneighbors(f::F, r::CellsRaster; order = nothing, threaded = true) where {F} =
+    DGG.mapneighbors(f, r; pass = DGG.Values(),
         order = order === nothing ? DGG.StorageOrder() : order, threaded)
-    return Rasters.rebuild(r; data = out)
-end
 
 # Boundary cells have fewer neighbors than on the complete level grid.
 function GM.outlets(r::CellsRaster)
-    cells = _cells(r)
+    cells = _cellvector(r)
     complete = _completegrid(cells)
     rim = DGG.mapneighbors(
         (c, nbrs) -> length(nbrs) < DGG.neighborcount(complete, DGG.cellid(c)),
@@ -111,7 +110,7 @@ _cellarea(grid, c::Cell) = DGG.IGeo7.cell_area(DGG.rawid(c))
 function GM.flowaccumulation(dem::CellsRaster,
         closed = fill!(similar(dem, Bool), false);
         method = GM.DInf(), cellsize = GM.cellsize(dem))
-    cv = _cells(dem)
+    cv = _cellvector(dem)
     grid = _completegrid(cv)
     acc = similar(dem, Float32)
     accv = parent(acc)
@@ -124,7 +123,7 @@ end
 function GM.flowaccumulation!(dem::CellsRaster, acc::AbstractArray{<:Real},
         closed = fill!(similar(dem, Bool), false);
         method = GM.DInf(), cellsize = GM.cellsize(dem))
-    cv = _cells(dem)
+    cv = _cellvector(dem)
     closedv = parent(closed)
     order = ones(Int64, length(cv) - count(closedv))
     down = zeros(Int, length(cv))
@@ -207,7 +206,7 @@ end
 
 function GM.height_above_nearest_drainage(dem::IGeo7Raster;
         method = GM.D8(), cellsize = GM.cellsize(dem), threshold = 100)
-    cv = _cells(dem)
+    cv = _cellvector(dem)
     n = length(cv)
     output = zero(dem)
     acc = similar(dem, Float32)
@@ -231,7 +230,7 @@ end
 
 function GM.cellarea(r::CellsRaster, c::CellIndex; cellsize=nothing)
     _position(r, c)
-    return _cellarea(DGG.levelgrid(DGG.system(_cells(r)), DGG.level(c)), c)
+    return _cellarea(DGG.levelgrid(DGG.system(_cellvector(r)), DGG.level(c)), c)
 end
 
 function GM.celldistance(
@@ -242,7 +241,7 @@ function GM.celldistance(
 )
     _position(r, from)
     _position(r, to)
-    grid = DGG.levelgrid(DGG.system(_cells(r)), DGG.level(from))
+    grid = DGG.levelgrid(DGG.system(_cellvector(r)), DGG.level(from))
     a = DGG.cell_centroid(grid, from)
     b = DGG.cell_centroid(grid, to)
     angle = acos(clamp(a[1] * b[1] + a[2] * b[2] + a[3] * b[3], -1.0, 1.0))
@@ -253,7 +252,7 @@ function GM.cellbearing(r::CellsRaster, from::CellIndex, to::CellIndex)
     _position(r, from)
     _position(r, to)
     from == to && return 0.0
-    grid = DGG.levelgrid(DGG.system(_cells(r)), DGG.level(from))
+    grid = DGG.levelgrid(DGG.system(_cellvector(r)), DGG.level(from))
     a = DGG.cell_centroid(grid, from)
     b = DGG.cell_centroid(grid, to)
     lon1, lon2 = atan(a[2], a[1]), atan(b[2], b[1])
