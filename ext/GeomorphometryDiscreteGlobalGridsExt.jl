@@ -44,8 +44,8 @@ GM.neighbors(r::CellsRaster, c::CellIndex) = DGG.neighbors(_lookup(r), c)
 
 GM.neighbors(r::CellsRaster) = DGG.neighbors(r)
 
-# DGG's array entry point resolves the `Cells` dimension and rebuilds the
-# raster itself; `Values()` hands `f` the cell's and neighbours' scalars.
+# Let DGG resolve the cell axis and rebuild the raster. `Values()` passes the
+# cell and neighbor values to `f`.
 GM.mapneighbors(f::F, r::CellsRaster; order = nothing, threaded = true) where {F} =
     DGG.mapneighbors(f, r; pass = DGG.Values(),
         order = order === nothing ? DGG.StorageOrder() : order, threaded)
@@ -228,9 +228,8 @@ function GM.height_above_nearest_drainage(dem::IGeo7Raster;
     return output
 end
 
-# The IGeo7 threshold method above is the only DGGS HAND implementation; keep
-# the generic position-space methods, which need relative-cell arithmetic,
-# unreachable from cell-axis rasters.
+# DGGS HAND supports only the threshold form on IGeo7 rasters. Reject the
+# other entry points before they reach position-based code.
 GM.height_above_nearest_drainage(dem::CellsRaster; kw...) =
     throw(ArgumentError(
         "height_above_nearest_drainage needs relative-cell arithmetic, " *
