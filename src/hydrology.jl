@@ -80,10 +80,9 @@ const nbs =
 """
     neighbors(dem, cell)
 
-Iterator over the cells adjacent to `cell` in `dem` — for arrays, the Moore
-neighborhood. Implementations return only in-domain indices of `dem`; kernels
-index with them directly (several under `@inbounds`) without re-checking
-membership.
+Iterate over the neighbors of `cell` that fall within `dem`. Matrices use the
+Moore neighborhood. Implementations must yield only in-domain indices: kernels
+index `dem` with the result directly, some under `@inbounds`.
 """
 neighbors(dem, cell::CartesianIndex{2}) =
     Iterators.filter(in(CartesianIndices(dem)), cell + nb for nb in nbs)

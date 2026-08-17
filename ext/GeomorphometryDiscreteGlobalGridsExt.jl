@@ -5,10 +5,7 @@ import Geomorphometry as GM
 import Rasters
 using Rasters: Raster
 
-# Any one-dimensional raster on a `Cells` lookup, whatever the system.
-# Everything that reaches the data through the DGG API — indexing, the
-# neighborhood forms, the priority-flood queue phase, cell geometry — is
-# system-generic on this alias; only the direction codec dispatches narrower.
+# One-dimensional rasters indexed by a DGG `Cells` lookup.
 const CellsRaster{T,D} =
     Raster{T,1,D} where {T,D<:Tuple{<:DGG.Cells{<:DGG.CellLookup}}}
 const IGeo7Raster{T,D} =
@@ -17,7 +14,7 @@ const RelativeIndex = DGG.RelativeZ7Cell
 const Cell = DGG.Z7Cell
 const CellIndex = DGG.AbstractCellIndex
 
-# Earth's authalic radius, scaling unit-sphere geometry for every system.
+# Authalic Earth radius used to scale unit-sphere measurements.
 const R_AUTHALIC = DGG.ISEA.R_AUTHALIC
 
 _lookup(r::CellsRaster) = Rasters.lookup(r, DGG.Cells)
@@ -30,8 +27,7 @@ Base.eachindex(r::CellsRaster) = _cells(r)
 
 function _position(r::CellsRaster, c::CellIndex)
     p = DGG.cellposition(_lookup(r), c)
-    # Tuple-wrapped: `showerror` iterates the index field, and a cell index is
-    # not iterable.
+    # Wrap the cell because `BoundsError` iterates its index field.
     isnothing(p) && throw(BoundsError(r, (c,)))
     return p
 end
@@ -44,7 +40,7 @@ Base.checkbounds(::Type{Bool}, r::CellsRaster, c::CellIndex) =
 
 GM.neighbors(r::CellsRaster, c::CellIndex) = DGG.neighbors(_lookup(r), c)
 
-# --- the neighborhood forms -------------------------------------------------
+# Neighborhood traversal
 
 GM.neighbors(r::CellsRaster) = DGG.neighbors(_cells(r))
 
@@ -55,8 +51,7 @@ function GM.mapneighbors(f::F, r::CellsRaster; order = nothing,
     return Rasters.rebuild(r; data = out)
 end
 
-# The rim: cells whose clipped ring is shorter than their complete-level
-# degree. One threaded sweep instead of two resolved neighbor sets per cell.
+# Boundary cells have fewer neighbors than on the complete level grid.
 function GM.outlets(r::CellsRaster)
     cells = _cells(r)
     complete = _completegrid(cells)
@@ -66,16 +61,12 @@ function GM.outlets(r::CellsRaster)
     return [cells[p] for p in eachindex(rim) if rim[p]]
 end
 
-# --- the priority-flood queue phase in position space -----------------------
+# Priority-flood traversal
 
-# Settle every cell from the rim inward in ascending elevation — the queue
-# phase `flowaccumulation!` and `height_above_nearest_drainage` share — with
-# positions as the only currency: the queue is keyed on Int positions with a
-# dense locator (no hashing), each cell's clipped ring is one row of a
-# `HaloTable` built once, and the neighbor that settles a cell is recorded as
-# a downstream POSITION in `down`. `order` receives the settle sequence;
-# positions closed on entry are skipped exactly as the cell-indexed loop
-# skips them, and every rim cell is seeded regardless of that mask.
+# Visit cells from the boundary inward, taking the lowest queued elevation.
+# `order` records visited positions and `down[p]` records the position that
+# first reached `p`. Closed cells are skipped, except that boundary cells are
+# always queued.
 function _settle!(order::Vector{Int64}, down::Vector{Int}, closedv, zv, cv,
         table)
     n = length(cv)
@@ -102,8 +93,7 @@ function _settle!(order::Vector{Int64}, down::Vector{Int}, closedv, zv, cv,
     return nothing
 end
 
-# The relative-cell directions the settle implies, materialized once per cell
-# from the downstream positions; zero where nothing settled the cell.
+# Convert downstream positions to relative IGeo7 directions; zero marks no outflow.
 function _directions(dem::IGeo7Raster, cv, down)
     zrel = first(cv) - first(cv)
     dir = similar(dem, typeof(zrel))
@@ -114,8 +104,7 @@ function _directions(dem::IGeo7Raster, cv, down)
     return dir
 end
 
-# Cell area by identity: IGeo7's structural constant where it applies, the
-# exact spherical polygon (scaled to the authalic Earth) everywhere else.
+# IGeo7 uses its constant cell area; other grids use their spherical polygon area.
 _cellarea(grid, c::CellIndex) = DGG.cell_area(grid, c) * R_AUTHALIC^2
 _cellarea(grid, c::Cell) = DGG.IGeo7.cell_area(DGG.rawid(c))
 
@@ -144,7 +133,7 @@ function GM.flowaccumulation!(dem::CellsRaster, acc::AbstractArray{<:Real},
     return _postsettle(method, dem, acc, order, down, cv, cellsize)
 end
 
-# D8 accumulation follows the downstream positions — no cell arithmetic.
+# Accumulate each cell into its downstream position in reverse traversal order.
 function _accumulate_down!(accv, order, down)
     @inbounds for j in reverse(eachindex(order))
         p = order[j]
@@ -155,19 +144,11 @@ function _accumulate_down!(accv, order, down)
     return accv
 end
 
-# --- the direction codec (extension-internal) -------------------------------
+# Flow direction encoding
 #
-# Generic systems persist, for each settled cell, the SLOT of its downstream
-# neighbor in the cell's complete-level ring — deterministic because ring
-# order is — as a bit in a `FlowDirection{D8D,UInt16}`: slot `k` sets bit
-# `k - 1`, a pit stores zero. Per-cell slot counts handle pentagons and
-# irregular valence; decoding regenerates the ring and reads the set bits.
-# IGeo7 keeps its `RelativeZ7Cell`/LDD codec unchanged below.
-#
-# Rings use DGG's default `Vertex` connectivity everywhere. On quad-based
-# systems (HEALPix, ISEA4R) that is the 8-neighbor stencil — the D8 analog —
-# so water may exit across a corner, matching D8 hydrology on matrices;
-# `Edge` (4-neighbor) would dam diagonal drainage.
+# Non-IGeo7 grids encode the downstream neighbor's complete-level ring slot as
+# a `UInt16` bit. Slot `k` sets bit `k - 1`, and zero marks no outflow. Vertex
+# rings include corner neighbors on quad-based grids and may vary in length.
 
 function _ringslot(complete, cell::CellIndex, target::CellIndex)
     ring = DGG.neighbors(complete, cell)
@@ -179,7 +160,7 @@ function _ringslot(complete, cell::CellIndex, target::CellIndex)
     return UInt16(1) << (slot - 1)
 end
 
-# The cells a stored slot direction points at, in slot order.
+# Decode set slots to cells in ring order.
 function _slottargets(complete, cell::CellIndex, d::GM.FlowDirection{GM.D8D})
     ring = DGG.neighbors(complete, cell)
     bits = Int(d)
@@ -203,8 +184,7 @@ _postsettle(method::GM.FlowDirectionMethod, dem::CellsRaster, acc, order,
     "flow accumulation with $(nameof(typeof(method))) needs relative-cell " *
     "arithmetic, which only the IGeo7 backend provides; use D8"))
 
-# IGeo7's persisted directions stay cell-relative, exactly as the generic
-# cell-indexed path writes them, encoded once per cell.
+# IGeo7 stores D8 results with its relative-cell LDD encoding.
 function _postsettle(::GM.D8, dem::IGeo7Raster, acc, order, down, cv, cellsize)
     _accumulate_down!(parent(acc), order, down)
     zrel = first(cv) - first(cv)
@@ -217,9 +197,7 @@ function _postsettle(::GM.D8, dem::IGeo7Raster, acc, order, down, cv, cellsize)
     return acc, output
 end
 
-# The DInf and FD8 accumulate phases read the DEM's geometry around each
-# cell, so they keep the generic implementation; the settle's product is
-# materialized into the direction raster they consume.
+# DInf and FD8 derive flow shares from the DEM and relative IGeo7 directions.
 function _postsettle(method::GM.FlowDirectionMethod, dem::IGeo7Raster, acc,
         order, down, cv, cellsize)
     dir = _directions(dem, cv, down)

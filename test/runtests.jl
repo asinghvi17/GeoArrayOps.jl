@@ -93,9 +93,6 @@ end
         hillshade(A)
     end
     @testset "neighbors clip to the domain" begin
-        # Kernels index `dem` with what `neighbors` yields, several under
-        # `@inbounds`, so a corner cell must yield exactly its in-domain
-        # neighbors and nothing outside.
         A = zeros(3, 3)
         @test Set(Geomorphometry.neighbors(A, CartesianIndex(1, 1))) ==
               Set([CartesianIndex(2, 1), CartesianIndex(1, 2), CartesianIndex(2, 2)])

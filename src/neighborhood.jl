@@ -1,14 +1,10 @@
-# Generic neighborhood forms over an indexed grid. The fallbacks here run the
-# per-cell loop the kernels used to inline; backends with structure to exploit
-# (compressed DGGS subsets) override them with amortized traversals.
+# Fallbacks visit every index and delegate lookup to `neighbors(dem, cell)`.
 
 """
     neighbors(dem)
 
-Iterator over `(cell, nbrs)` for every cell of `dem`, where `nbrs` is
-`neighbors(dem, cell)` — in-domain cells only. Backends may specialize the
-one-arg form to amortize per-cell lookup work; the fallback defers to the
-two-arg form.
+Iterate over `(cell, neighbors(dem, cell))` for every cell in `dem`. Neighbor
+iterators contain only indices within `dem`.
 """
 neighbors(dem) = ((cell, neighbors(dem, cell)) for cell in eachindex(dem))
 
@@ -17,12 +13,11 @@ _neighborvalues(dem, cell) = (dem[neighbor] for neighbor in neighbors(dem, cell)
 """
     mapneighbors(f, dem; order = nothing, threaded = false)
 
-Apply `f(cell, value, values)` to every cell of `dem` — `value` the cell's own
-sample, `values` an iterator of its neighbors' samples (in-domain only, per the
-[`neighbors`](@ref) contract) — and collect the scalar results into a grid
-shaped like `dem`. `f` must be pure per cell: backends may thread the traversal
-(`threaded`) or reorder it (`order`); the fallback runs a sequential loop and
-ignores both.
+Apply `f(cell, value, neighbor_values)` to every cell in `dem` and return the
+results in a grid shaped like `dem`. `neighbor_values` contains samples from
+[`neighbors`](@ref). Calls to `f` must be independent: backends may traverse in
+`order` or run calls concurrently when `threaded` is `true`. The fallback
+ignores both keywords.
 """
 function mapneighbors(f::F, dem; order = nothing, threaded = false) where {F}
     cells = eachindex(dem)
