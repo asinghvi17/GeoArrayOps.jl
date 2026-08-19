@@ -127,7 +127,7 @@ function GM.flowaccumulation!(dem::CellsRaster, acc::AbstractArray{<:Real},
     closedv = parent(closed)
     order = ones(Int64, length(cv) - count(closedv))
     down = zeros(Int, length(cv))
-    table = DGG.HaloTable(cv)
+    table = DGG.adjacency(cv)
     _settle!(order, down, closedv, parent(dem), cv, table)
     return _postsettle(method, dem, acc, order, down, cv, cellsize)
 end
@@ -217,7 +217,7 @@ function GM.height_above_nearest_drainage(dem::IGeo7Raster;
     closed = fill!(similar(dem, Bool), false)
     order = ones(Int64, n)
     down = zeros(Int, n)
-    table = DGG.HaloTable(cv)
+    table = DGG.adjacency(cv)
     _settle!(order, down, parent(closed), parent(dem), cv, table)
     dir = _directions(dem, cv, down)
     flowdirs = GM._accumulate!(method, acc, order, dir, cv, dem, cellsize)
