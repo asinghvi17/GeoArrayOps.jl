@@ -187,7 +187,9 @@ _postsettle(method::GM.FlowDirectionMethod, dem::CellsRaster, acc, order,
 function _postsettle(::GM.D8, dem::IGeo7Raster, acc, order, down, cv, cellsize)
     _accumulate_down!(parent(acc), order, down)
     zrel = first(cv) - first(cv)
-    output = similar(dem, GM.FlowDirection{GM.LDD, UInt8})
+    # NOTE: need missingval = nothing here to prevent Rasters from trying
+    # to cook one up and calling typemax(GM.FlowDirection{...})
+    output = similar(dem, GM.FlowDirection{GM.LDD, UInt8}; missingval = nothing)
     outv = parent(output)
     @inbounds for p in eachindex(down)
         rel = down[p] == 0 ? zrel : cv[down[p]] - cv[p]
