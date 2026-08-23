@@ -1,7 +1,7 @@
 # Grid-driven spatial dispatch in Geomorphometry
 
 Status: design discussion; no package implementation has been started. A
-standalone executable proof of concept is available in
+standalone executable proof of concept, including a real DGG `CellLookup`, is available in
 [`examples/grid_interface_poc.jl`](../../examples/grid_interface_poc.jl).
 
 ## Summary
@@ -310,9 +310,29 @@ storage offsets using its `(xaxis, yaxis)` parameter and coordinate orientation.
 The same Horn or Moore stencil therefore has the same geographic meaning for
 X,Y and Y,X storage.
 
-For `CellGrid`, the initial neighborhood is adjacency. Mapping can use the
-lookup's preferred storage order and optimized DGG traversal without changing
-Base indexing behavior on Raster.
+The proof of concept makes this concrete with a Stencils.jl `NamedStencil`.
+Its fields are ordered north-up—northwest, north, northeast, west, east,
+southwest, south, southeast—while its offsets are transformed into the input's
+physical storage axes. Both the field order and transformed offsets are encoded
+by the stencil type. The grid does not store an algorithm-specific stencil;
+the rectilinear `mapneighbors` method derives it from the grid when requested.
+It then delegates traversal, boundary reads, allocation, and wrapper
+preservation to `mapstencil`, exposing grid-independent neighbor records.
+
+Algorithm kernels should be ordinary generic functions of `(cell, value,
+neighbors)`, following the direction already taken by `_roughness_kernel`,
+`_tpi_kernel`, and `_prominence_kernel`. An algorithm implementation then does
+no grid-specific work: it passes its kernel, raster, and grid directly to
+Geomorphometry's `mapneighbors`. The rectilinear method delegates to
+Stencils.jl; the cell method delegates traversal and output inference to DGG;
+both present the same kernel vocabulary.
+
+For `CellGrid`, the initial neighborhood is adjacency. DGG already supports
+`neighbors(cell_lookup, storage_position)`, returning neighboring storage
+positions clipped to lookup membership in the grid's defined ring order.
+Geomorphometry's `mapneighbors` can use that primitive, enrich each neighbor
+with the geometry its algorithms request, and preserve optimized DGG traversal
+without changing Base indexing behavior on Raster.
 
 This supports two useful levels of algorithm:
 
