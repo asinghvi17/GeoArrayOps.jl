@@ -1,0 +1,2 @@
+# Regridded elevation caches: reproducible scratch, rebuilt by setup.jl on demand.
+*.jls
