@@ -30,18 +30,19 @@ using QuickHeaps: FastPriorityQueue, PriorityQueue, enqueue!, dequeue!
 using KernelAbstractions: KernelAbstractions, @kernel, @index, @Const, get_backend
 
 include("utils.jl")
+include("neighborhood.jl")
 include("relative.jl")
 include("pmf.jl")
 include("smf.jl")
+include("terrain.jl")
 include("plot.jl")
 include("spread.jl")
-include("terrain.jl")
 include("skew.jl")
 include("flowdir.jl")
 include("hydrology.jl")
 include("horizon.jl")
 
-export ZevenbergenThorne, Horn, MDG
+export ZevenbergenThorne, Horn, MaximumDownwardGradient, SymmetricGradient
 export D8, DInf, FD8
 export progressive_morphological_filter, simple_morphological_filter
 export pssm, hillshade, multihillshade

@@ -37,7 +37,7 @@ function GM.outlets(r::IGeo7Raster)
     complete = DGG.levelgrid(DGG.system(cells), DGG.level(cells))
     return Cell[
         c for c in cells
-        if length(DGG.neighbors(cells, c)) < length(DGG.neighbors(complete, c))
+              if length(DGG.neighbors(cells, c)) < length(DGG.neighbors(complete, c))
     ]
 end
 
@@ -61,7 +61,7 @@ function GM.celldistance(
     return angle * DGG.IGeo7.R_AUTHALIC
 end
 
-function GM.cellbearing(r::IGeo7Raster, from::Cell, to::Cell)
+function GM.cellbearing(r::IGeo7Raster, from::Cell, to::Cell; cellsize=nothing)
     _position(r, from)
     _position(r, to)
     from == to && return 0.0

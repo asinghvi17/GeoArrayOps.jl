@@ -77,7 +77,15 @@ end
 const nbs =
     CartesianIndex.(((-1, -1), (-1, 1), (1, -1), (1, 1), (-1, 0), (0, -1), (0, 1), (1, 0)))
 
-neighbors(_, cell::CartesianIndex{2}) = (cell + nb for nb in nbs)
+"""
+    neighbors(dem, cell)
+
+Iterate over the neighbors of `cell` that fall within `dem`. Matrices use the
+Moore neighborhood. Implementations must yield only in-domain indices: kernels
+index `dem` with the result directly, some under `@inbounds`.
+"""
+neighbors(dem, cell::CartesianIndex{2}) =
+    Iterators.filter(in(CartesianIndices(dem)), cell + nb for nb in nbs)
 
 function watersheds(dem, queued = fill!(similar(dem, Bool), false))
     R = _cells(dem)
