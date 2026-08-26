@@ -229,6 +229,15 @@ function GM.height_above_nearest_drainage(dem::IGeo7Raster;
     GM._hand!(output, order, flowdirs, cv, acc, stream_mask, cellsize)
     return output
 end
+      
+function GM.outlets(r::IGeo7Raster)
+    cells = _cells(r)
+    complete = DGG.levelgrid(DGG.system(cells), DGG.level(cells))
+    return Cell[
+        c for c in cells
+              if length(DGG.neighbors(cells, c)) < length(DGG.neighbors(complete, c))
+    ]
+end
 
 # DGGS HAND supports only the threshold form on IGeo7 rasters. Reject the
 # other entry points before they reach position-based code.
@@ -263,7 +272,7 @@ function GM.celldistance(
     return angle * R_AUTHALIC
 end
 
-function GM.cellbearing(r::CellsRaster, from::CellIndex, to::CellIndex)
+function GM.cellbearing(r::IGeo7Raster, from::Cell, to::Cell; cellsize=nothing)
     _position(r, from)
     _position(r, to)
     from == to && return 0.0

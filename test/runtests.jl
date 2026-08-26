@@ -86,9 +86,10 @@ end
         roughness(A)
         slope(A; method = Horn())
         slope(A; cellsize = (5, 5), method = ZevenbergenThorne())
-        slope(A; cellsize = (10, 10), method = MDG())
+        slope(A; cellsize = (10, 10), method = MaximumDownwardGradient())
+        slope(A; cellsize = (10, 10), method = SymmetricGradient())
         aspect(A)
-        aspect(A; method = MDG())
+        aspect(A; method = MaximumDownwardGradient())
         laplacian(A; gis = true)
         hillshade(A)
     end
@@ -459,7 +460,8 @@ end
         @test all(0 .<= a[2:7, 2:7] .< 360)
         # On a constant-gradient plane ZevenbergenThorne and Horn agree
         @test aspect(tilt; method = ZevenbergenThorne())[4, 4] ≈
-              aspect(tilt; method = Horn())[4, 4]
+              aspect(tilt; method = Horn())[4, 4] ≈ aspect(tilt; method = SymmetricGradient())[4, 4]
+              
     end
 
     @testset "directional slope and laplacian" begin
