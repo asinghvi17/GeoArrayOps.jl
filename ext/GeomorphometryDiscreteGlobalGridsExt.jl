@@ -103,6 +103,11 @@ function _directions(dem::IGeo7Raster, cv, down)
     return dir
 end
 
+# Match the missingval convention of the D8 direction outputs below; the
+# direction eltype cannot represent the DEM missingval anyway.
+GM._directiongrid(dem::CellsRaster, ::Type{C}) where {C <: GM.FlowDirectionConvention} =
+    similar(dem, GM.FlowDirection{C, UInt8}; missingval = nothing)
+
 # IGeo7 uses its constant cell area; other grids use their spherical polygon area.
 _cellarea(grid, c::CellIndex) = DGG.cell_area(grid, c) * R_AUTHALIC^2
 _cellarea(grid, c::Cell) = DGG.IGeo7.cell_area(DGG.rawid(c))
