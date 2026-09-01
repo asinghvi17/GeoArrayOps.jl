@@ -95,7 +95,7 @@ end
 # Convert downstream positions to relative IGeo7 directions; zero marks no outflow.
 function _directions(dem::IGeo7Raster, cv, down)
     zrel = first(cv) - first(cv)
-    dir = similar(dem, typeof(zrel))
+    dir = similar(dem, typeof(zrel); missingval = nothing)
     dirv = parent(dir)
     @inbounds for p in eachindex(down)
         dirv[p] = down[p] == 0 ? zrel : cv[down[p]] - cv[p]
@@ -108,11 +108,11 @@ _cellarea(grid, c::CellIndex) = DGG.cell_area(grid, c) * R_AUTHALIC^2
 _cellarea(grid, c::Cell) = DGG.IGeo7.cell_area(DGG.rawid(c))
 
 function GM.flowaccumulation(dem::CellsRaster,
-        closed = fill!(similar(dem, Bool), false);
-        method = GM.DInf(), cellsize = GM.cellsize(dem))
+        closed = fill!(similar(dem, Bool; missingval = nothing), false);
+        method = GM.D8(), cellsize = GM.cellsize(dem))
     cv = _cellvector(dem)
     grid = _completegrid(cv)
-    acc = similar(dem, Float32)
+    acc = similar(dem, Float32; missingval = NaN32)
     accv = parent(acc)
     @inbounds for p in eachindex(accv)
         accv[p] = _cellarea(grid, cv[p])
@@ -121,8 +121,8 @@ function GM.flowaccumulation(dem::CellsRaster,
 end
 
 function GM.flowaccumulation!(dem::CellsRaster, acc::AbstractArray{<:Real},
-        closed = fill!(similar(dem, Bool), false);
-        method = GM.DInf(), cellsize = GM.cellsize(dem))
+        closed = fill!(similar(dem, Bool; missingval = nothing), false);
+        method = GM.D8(), cellsize = GM.cellsize(dem))
     cv = _cellvector(dem)
     closedv = parent(closed)
     order = ones(Int64, length(cv) - count(closedv))
@@ -169,7 +169,7 @@ end
 function _postsettle(::GM.D8, dem::CellsRaster, acc, order, down, cv, cellsize)
     _accumulate_down!(parent(acc), order, down)
     complete = _completegrid(cv)
-    output = similar(dem, GM.FlowDirection{GM.D8D, UInt16})
+    output = similar(dem, GM.FlowDirection{GM.D8D, UInt16}; missingval = nothing)
     outv = parent(output)
     @inbounds for p in eachindex(down)
         outv[p] = GM.FlowDirection{GM.D8D}(down[p] == 0 ? UInt16(0) :
@@ -187,8 +187,6 @@ _postsettle(method::GM.FlowDirectionMethod, dem::CellsRaster, acc, order,
 function _postsettle(::GM.D8, dem::IGeo7Raster, acc, order, down, cv, cellsize)
     _accumulate_down!(parent(acc), order, down)
     zrel = first(cv) - first(cv)
-    # NOTE: need missingval = nothing here to prevent Rasters from trying
-    # to cook one up and calling typemax(GM.FlowDirection{...})
     output = similar(dem, GM.FlowDirection{GM.LDD, UInt8}; missingval = nothing)
     outv = parent(output)
     @inbounds for p in eachindex(down)
@@ -211,12 +209,12 @@ function GM.height_above_nearest_drainage(dem::IGeo7Raster;
     cv = _cellvector(dem)
     n = length(cv)
     output = zero(dem)
-    acc = similar(dem, Float32)
+    acc = similar(dem, Float32; missingval = NaN32)
     accv = parent(acc)
     @inbounds for p in 1:n
         accv[p] = DGG.IGeo7.cell_area(DGG.rawid(cv[p]))
     end
-    closed = fill!(similar(dem, Bool), false)
+    closed = fill!(similar(dem, Bool; missingval = nothing), false)
     order = ones(Int64, n)
     down = zeros(Int, n)
     table = DGG.adjacency(cv)
